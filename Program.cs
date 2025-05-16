@@ -9,60 +9,96 @@ using System.Threading; // Добавили пространство имен
 
 class Server
 {
-    static readonly List<TcpClient> clients = new List<TcpClient>();
+    private static readonly List<TcpClient> clients = new List<TcpClient>();
+    private static readonly object lockObject = new object();
 
     static void Main()
     {
-        TcpListener listener = new TcpListener(IPAddress.Any, 8888);
-        listener.Start();
-        Console.WriteLine("Сервер запущен...");
-
-        while (true)
+        try
         {
-            TcpClient client = listener.AcceptTcpClient();
-            clients.Add(client);
-            Console.WriteLine("Подключен новый клиент");
+            TcpListener listener = new TcpListener(IPAddress.Any, 8888);
+            listener.Start();
+            Console.WriteLine("Сервер запущен на порту 8888...");
 
-            Thread clientThread = new Thread(HandleClient);
-            clientThread.Start(client);
+            while (true)
+            {
+                TcpClient client = listener.AcceptTcpClient();
+
+                lock (lockObject)
+                {
+                    clients.Add(client);
+                }
+
+                Console.WriteLine($"Подключен новый клиент. Всего клиентов: {clients.Count}");
+
+                Thread clientThread = new Thread(HandleClient);
+                clientThread.IsBackground = true;
+                clientThread.Start(client);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Ошибка сервера: {ex.Message}");
         }
     }
 
     static void HandleClient(object obj)
     {
         TcpClient client = (TcpClient)obj;
-        NetworkStream stream = client.GetStream();
+        NetworkStream stream = null;
 
         try
         {
+            stream = client.GetStream();
             byte[] buffer = new byte[1024];
+
             while (true)
             {
                 int bytesRead = stream.Read(buffer, 0, buffer.Length);
                 if (bytesRead == 0) break;
 
                 string message = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                Console.WriteLine($"Получено: {message}");
+                Console.WriteLine($"Получено от {client.Client.RemoteEndPoint}: {message}");
                 BroadcastMessage(message, client);
             }
         }
-        catch
+        catch (Exception ex)
         {
-            clients.Remove(client);
+            Console.WriteLine($"Ошибка при работе с клиентом: {ex.Message}");
+        }
+        finally
+        {
+            lock (lockObject)
+            {
+                clients.Remove(client);
+            }
+
+            stream?.Close();
             client.Close();
-            Console.WriteLine("Клиент отключен");
+            Console.WriteLine($"Клиент отключен. Осталось клиентов: {clients.Count}");
         }
     }
 
     static void BroadcastMessage(string message, TcpClient sender)
     {
         byte[] data = Encoding.UTF8.GetBytes(message);
-        foreach (TcpClient client in clients)
+
+        lock (lockObject)
         {
-            if (client != sender && client.Connected)
+            foreach (TcpClient client in clients.ToArray()) // ToArray для безопасной итерации
             {
-                NetworkStream stream = client.GetStream();
-                stream.Write(data, 0, data.Length);
+                try
+                {
+                    if (client != sender && client.Connected)
+                    {
+                        NetworkStream stream = client.GetStream();
+                        stream.Write(data, 0, data.Length);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Ошибка при отправке сообщения клиенту: {ex.Message}");
+                }
             }
         }
     }
