@@ -6,11 +6,14 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Threading; // Добавили пространство имен
+using System.Collections.Concurrent; // Добавили пространство имен
 
 class Server
 {
     private static readonly List<TcpClient> clients = new List<TcpClient>();
     private static readonly object lockObject = new object();
+    private static readonly ConcurrentQueue<string> messageHistory = new ConcurrentQueue<string>();
+    private const int MaxHistorySize = 50; // Количество сохраненных сообщений
 
     static void Main()
     {
@@ -31,6 +34,9 @@ class Server
 
                 Console.WriteLine($"Подключен новый клиент. Всего клиентов: {clients.Count}");
 
+                // Send message history to new client
+                SendHistoryToClient(client);
+
                 Thread clientThread = new Thread(HandleClient);
                 clientThread.IsBackground = true;
                 clientThread.Start(client);
@@ -42,6 +48,29 @@ class Server
         }
     }
 
+    static void SendHistoryToClient(TcpClient client)
+    {
+        try
+        {
+            if (!messageHistory.Any()) return;
+
+            NetworkStream stream = client.GetStream();
+            string historyHeader = "=== История сообщений ===\n";
+            byte[] headerData = Encoding.UTF8.GetBytes(historyHeader);
+            stream.Write(headerData, 0, headerData.Length);
+
+            foreach (string message in messageHistory)
+            {
+                byte[] messageData = Encoding.UTF8.GetBytes(message + "\n");
+                stream.Write(messageData, 0, messageData.Length);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Ошибка при отправке истории: {ex.Message}");
+        }
+    }
+
     static void HandleClient(object obj)
     {
         TcpClient client = (TcpClient)obj;
@@ -50,7 +79,7 @@ class Server
         try
         {
             stream = client.GetStream();
-            byte[] buffer = new byte[1024];
+            byte[] buffer = new byte[4096]; // Увеличили буфер
 
             while (true)
             {
@@ -59,7 +88,12 @@ class Server
 
                 string message = Encoding.UTF8.GetString(buffer, 0, bytesRead);
                 Console.WriteLine($"Получено от {client.Client.RemoteEndPoint}: {message}");
-                BroadcastMessage(message, client);
+
+                // Add timestamp and save to history
+                string timestampedMessage = $"[{DateTime.Now:HH:mm:ss}] {message}";
+                AddMessageToHistory(timestampedMessage);
+
+                BroadcastMessage(timestampedMessage, client);
             }
         }
         catch (Exception ex)
@@ -79,17 +113,28 @@ class Server
         }
     }
 
+    static void AddMessageToHistory(string message)
+    {
+        messageHistory.Enqueue(message);
+
+        // Maintain history size
+        while (messageHistory.Count > MaxHistorySize)
+        {
+            messageHistory.TryDequeue(out _);
+        }
+    }
+
     static void BroadcastMessage(string message, TcpClient sender)
     {
         byte[] data = Encoding.UTF8.GetBytes(message);
 
         lock (lockObject)
         {
-            foreach (TcpClient client in clients.ToArray()) // ToArray для безопасной итерации
+            foreach (TcpClient client in clients.ToArray())
             {
                 try
                 {
-                    if (client != sender && client.Connected)
+                    if (client.Connected)
                     {
                         NetworkStream stream = client.GetStream();
                         stream.Write(data, 0, data.Length);
