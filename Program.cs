@@ -75,11 +75,11 @@ class Server
     {
         TcpClient client = (TcpClient)obj;
         NetworkStream stream = null;
+        byte[] buffer = new byte[8192]; // Увеличиваем буфер
 
         try
         {
             stream = client.GetStream();
-            byte[] buffer = new byte[4096]; // Увеличили буфер
 
             while (true)
             {
@@ -87,13 +87,17 @@ class Server
                 if (bytesRead == 0) break;
 
                 string message = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                Console.WriteLine($"Получено от {client.Client.RemoteEndPoint}: {message}");
 
-                // Add timestamp and save to history
-                string timestampedMessage = $"[{DateTime.Now:HH:mm:ss}] {message}";
-                AddMessageToHistory(timestampedMessage);
+                // Проверяем на команды (например, NAME:)
+                if (message.StartsWith("NAME:"))
+                {
+                    // Обработка имени пользователя
+                    continue;
+                }
 
-                BroadcastMessage(timestampedMessage, client);
+                Console.WriteLine($"Получено: {message}");
+                AddMessageToHistory(message);
+                BroadcastMessage(message, client);
             }
         }
         catch (Exception ex)
